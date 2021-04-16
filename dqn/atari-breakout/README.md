@@ -11,3 +11,5 @@ sudo apt-get install zlib1g-dev cmake
 Tensorboard:  
 tensorboard --logdir ./logs/  
 rm -rv logs/*  
+
+@brthor

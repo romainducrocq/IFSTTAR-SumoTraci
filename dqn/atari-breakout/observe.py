@@ -18,7 +18,7 @@ if __name__ == "__main__":
     net = Network(env, device)
     net = net.to(device)
 
-    net.load(SAVE_PATH)
+    _, _ = net.load(SAVE_PATH)
 
     obs = env.reset()
     beginning_episode = True

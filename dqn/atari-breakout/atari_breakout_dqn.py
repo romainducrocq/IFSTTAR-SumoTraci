@@ -6,6 +6,7 @@ from collections import deque
 import itertools
 import numpy as np
 import random
+import time
 
 from torch.utils.tensorboard import SummaryWriter
 
@@ -26,9 +27,10 @@ EPSILON_DECAY = int(1e6)
 NUM_ENVS = 4
 TARGET_UPDATE_FREQUENCY = 10000 // NUM_ENVS
 LR = 5e-5
-SAVE_PATH = './atari_model.pack'
+ALGORITHM = 'dqn'
+SAVE_PATH = './save/' + str(ALGORITHM) + '/lr' + str(LR) + '/model.pack'
 SAVE_INTERVAL = 10000
-LOG_DIR = './logs/atari_vanilla'
+LOG_DIR = './logs/' + str(ALGORITHM) + '/lr' + str(LR) + '/'
 LOG_INTERVAL = 1000
 
 
@@ -110,8 +112,11 @@ class Network(nn.Module):
         _loss = nn.functional.smooth_l1_loss(action_q_values, targets)
         return _loss
 
-    def save(self, save_path):
-        params = {k: t.detach().cpu().numpy() for k, t, in self.state_dict().items()}
+    def save(self, save_path, _step, _episode_count):
+        params = {
+            "model": {k: v.detach().cpu().numpy() for k, v, in self.state_dict().items()},
+            "step": _step, "episode_count": _episode_count
+        }
         params_data = msgpack.dumps(params)
 
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -123,13 +128,16 @@ class Network(nn.Module):
             raise FileNotFoundError(load_path)
 
         with open(load_path, 'rb') as f:
-            params_numpy = msgpack.loads(f.read())
+            params_dict = msgpack.loads(f.read())
 
-        params = {k: torch.as_tensor(v, device=self.device) for k, v in params_numpy.items()}
+        params = {k: torch.as_tensor(v, device=self.device) for k, v in params_dict["model"].items()}
         self.load_state_dict(params)
+
+        return params_dict["step"], params_dict["episode_count"]
 
 
 if __name__ == "__main__":
+    start_time = time.time()
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -142,7 +150,7 @@ if __name__ == "__main__":
     replay_buffer = deque(maxlen=BUFFER_SIZE)
     epinfos_buffer = deque([], maxlen=100)
 
-    episode_count = 0
+    resume_step, episode_count = 0, 0
 
     summary_writer = SummaryWriter(LOG_DIR)
 
@@ -152,25 +160,57 @@ if __name__ == "__main__":
     online_net = online_net.to(device)
     target_net = target_net.to(device)
 
+    # Resume training from checkpoint
+    if os.path.exists(SAVE_PATH):
+        print()
+        print("Resume training from " + SAVE_PATH + "...")
+        resume_step, episode_count = online_net.load(SAVE_PATH)
+        print("Step: ", resume_step, ", Episodes: ", episode_count)
+
     target_net.load_state_dict(online_net.state_dict())
 
     optimizer = torch.optim.Adam(online_net.parameters(), lr=LR)
 
+    print()
+    print("Initialize Replay Buffer...")
     # Initialize Replay Buffer
     obses = env.reset()
-    for _ in range(MIN_REPLAY_SIZE):
-        actions = [env.action_space.sample() for _ in range(NUM_ENVS)]
+    beginning_episodes = [True for _ in range(NUM_ENVS)]
+    for t in range(MIN_REPLAY_SIZE):
+        if t >= MIN_REPLAY_SIZE - resume_step:
+            if isinstance(obses[0], PytorchLazyFrames):
+                act_obses = np.stack([o.get_frames() for o in obses])
+                actions = online_net.act(act_obses, 0.0)
+            else:
+                actions = online_net.act(obses, 0.0)
+        else:
+            actions = [env.action_space.sample() for _ in range(NUM_ENVS)]
+
+        for e, beginning_episode in enumerate(beginning_episodes):
+            if beginning_episode:
+                beginning_episodes[e] = False
+                if t >= MIN_REPLAY_SIZE - resume_step:
+                    actions[e] = 1
 
         new_obses, rews, dones, _ = env.step(actions)
-        for obs, action, rew, done, new_obs in zip(obses, actions, rews, dones, new_obses):
+        for e, (obs, action, rew, done, new_obs) in enumerate(zip(obses, actions, rews, dones, new_obses)):
             transition = (obs, action, rew, done, new_obs)
             replay_buffer.append(transition)
 
+            if done:
+                beginning_episodes[e] = True
+
         obses = new_obses
 
+        if (t+1) % 10000 == 0:
+            print(str(t+1) + ' / ' + str(MIN_REPLAY_SIZE))
+            print("--- %s seconds ---" % round((time.time() - start_time), 2))
+
+    print()
+    print("Start Training...")
     # Main training loop
     obses = env.reset()
-    for step in itertools.count():
+    for step in itertools.count(start=resume_step):
         epsilon = np.interp(step * NUM_ENVS, [0, EPSILON_DECAY], [EPSILON_START, EPSILON_END])
 
         if isinstance(obses[0], PytorchLazyFrames):
@@ -205,7 +245,7 @@ if __name__ == "__main__":
             target_net.load_state_dict(online_net.state_dict())
 
         # Logging
-        if step % LOG_INTERVAL == 0:
+        if step % LOG_INTERVAL == 0 and step > resume_step:
             rew_mean = np.mean([e['r'] for e in epinfos_buffer]) or 0
             len_mean = np.mean([e['l'] for e in epinfos_buffer]) or 0
 
@@ -214,15 +254,16 @@ if __name__ == "__main__":
             print('Avg Rew:', rew_mean)
             print('Avg Ep Len:', len_mean)
             print('Episodes:', episode_count)
+            print("--- %s seconds ---" % round((time.time() - start_time), 2))
 
             summary_writer.add_scalar('AvgRew', rew_mean, global_step=step)
             summary_writer.add_scalar('AvgEpLen', len_mean, global_step=step)
             summary_writer.add_scalar('Episodes', episode_count, global_step=step)
 
         # Save
-        if step % SAVE_INTERVAL == 0 and step > 0:
-            print("Saving...")
-            online_net.save(SAVE_PATH)
+        if step % SAVE_INTERVAL == 0 and step > resume_step:
+            print()
+            print("Saving model...")
+            online_net.save(SAVE_PATH, step, episode_count)
             print("OK!")
-
 

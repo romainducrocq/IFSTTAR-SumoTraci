@@ -19,7 +19,7 @@ msgpack_numpy_patch()
 
 GAMMA = 0.99
 BATCH_SIZE = 32
-BUFFER_SIZE = int(1e6)
+BUFFER_SIZE = int(4e5)  # int(1e6) ## Hardware limitations
 MIN_REPLAY_SIZE = 50000
 EPSILON_START = 1.0
 EPSILON_END = 0.1

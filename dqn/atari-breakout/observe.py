@@ -35,7 +35,7 @@ if __name__ == "__main__":
 
         obs, rew, done, _ = env.step(action)
         env.render()
-        time.sleep(0.1)
+        time.sleep(1/30)
 
         if done[0]:
             obs = env.reset()

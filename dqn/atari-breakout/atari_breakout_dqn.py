@@ -112,10 +112,10 @@ class Network(nn.Module):
         _loss = nn.functional.smooth_l1_loss(action_q_values, targets)
         return _loss
 
-    def save(self, save_path, _step, _episode_count):
+    def save(self, save_path, _step, _episode_count, _rew_mean, _len_mean):
         params = {
             "model": {k: v.detach().cpu().numpy() for k, v, in self.state_dict().items()},
-            "step": _step, "episode_count": _episode_count
+            "step": _step, "episode_count": _episode_count, "rew_mean": _rew_mean, "len_mean": _len_mean
         }
         params_data = msgpack.dumps(params)
 
@@ -133,7 +133,7 @@ class Network(nn.Module):
         params = {k: torch.as_tensor(v, device=self.device) for k, v in params_dict["model"].items()}
         self.load_state_dict(params)
 
-        return params_dict["step"], params_dict["episode_count"]
+        return params_dict["step"], params_dict["episode_count"], params_dict["rew_mean"], params_dict["len_mean"]
 
 
 if __name__ == "__main__":
@@ -150,7 +150,7 @@ if __name__ == "__main__":
     replay_buffer = deque(maxlen=BUFFER_SIZE)
     epinfos_buffer = deque([], maxlen=100)
 
-    resume_step, episode_count = 0, 0
+    resume_step, episode_count, rew_mean, len_mean = 0, 0, 0, 0
 
     summary_writer = SummaryWriter(LOG_DIR)
 
@@ -164,8 +164,9 @@ if __name__ == "__main__":
     if os.path.exists(SAVE_PATH):
         print()
         print("Resume training from " + SAVE_PATH + "...")
-        resume_step, episode_count = online_net.load(SAVE_PATH)
-        print("Step: ", resume_step, ", Episodes: ", episode_count)
+        resume_step, episode_count, rew_mean, len_mean = online_net.load(SAVE_PATH)
+        [epinfos_buffer.append({'r': rew_mean, 'l': len_mean}) for _ in range(np.min([episode_count, epinfos_buffer.maxlen]))]
+        print("Step: ", resume_step, ", Episodes: ", episode_count, ", Avg Rew: ", rew_mean, ", Avg Ep Len: ", len_mean)
 
     target_net.load_state_dict(online_net.state_dict())
 
@@ -226,7 +227,7 @@ if __name__ == "__main__":
             replay_buffer.append(transition)
 
             if done:
-                epinfos_buffer.append(info['episode'])
+                epinfos_buffer.append({'r': info['episode']['r'], 'l': info['episode']['l']})
                 episode_count += 1
 
         obses = new_obses
@@ -264,6 +265,6 @@ if __name__ == "__main__":
         if step % SAVE_INTERVAL == 0 and step > resume_step:
             print()
             print("Saving model...")
-            online_net.save(SAVE_PATH, step, episode_count)
+            online_net.save(SAVE_PATH, step, episode_count, rew_mean, len_mean)
             print("OK!")
 

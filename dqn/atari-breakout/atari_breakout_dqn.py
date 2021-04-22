@@ -17,17 +17,18 @@ import msgpack
 from msgpack_numpy import patch as msgpack_numpy_patch
 msgpack_numpy_patch()
 
+DOUBLE = True
 GAMMA = 0.99
 BATCH_SIZE = 32
 BUFFER_SIZE = int(4e5)  # int(1e6) ## Hardware limitations
 MIN_REPLAY_SIZE = 50000
 EPSILON_START = 1.0
-EPSILON_END = 0.1
+EPSILON_END = (0.01 if DOUBLE else 0.1)
 EPSILON_DECAY = int(1e6)
 NUM_ENVS = 4
-TARGET_UPDATE_FREQUENCY = 10000 // NUM_ENVS
+TARGET_UPDATE_FREQUENCY = (30000 if DOUBLE else 10000) // NUM_ENVS
 LR = 5e-5
-ALGORITHM = 'dqn'
+ALGORITHM = ('double_' if DOUBLE else '') + 'dqn'
 SAVE_PATH = './save/' + str(ALGORITHM) + '/lr' + str(LR) + '/model.pack'
 SAVE_INTERVAL = 10000
 LOG_DIR = './logs/' + str(ALGORITHM) + '/lr' + str(LR) + '/'
@@ -60,11 +61,12 @@ def nature_cnn(observation_space, depths=(32, 64, 64), final_layer=512):
 
 
 class Network(nn.Module):
-    def __init__(self, _env, _device):
+    def __init__(self, _env, _device, double=True):
         super().__init__()
 
         self.num_actions = _env.action_space.n
         self.device = _device
+        self.double = double
 
         conv_net = nature_cnn(_env.observation_space)
         self.net = nn.Sequential(
@@ -100,10 +102,20 @@ class Network(nn.Module):
             else torch.as_tensor(np.asarray([t[4] for t in _transitions]), dtype=torch.float32, device=self.device)
 
         # Compute Targets
-        target_q_values = _target_net(new_obses_t)
-        max_target_q_values = target_q_values.max(dim=1, keepdim=True)[0]
+        with torch.no_grad():
+            if self.double:
+                targets_online_q_values = self(new_obses_t)
+                targets_online_best_q_indices = targets_online_q_values.argmax(dim=1, keepdim=True)
 
-        targets = rews_t + (1-dones_t) * GAMMA * max_target_q_values
+                targets_target_q_values = target_net(new_obses_t)
+                targets_selected_q_values = torch.gather(input=targets_target_q_values, dim=1, index=targets_online_best_q_indices)
+
+                targets = rews_t + (1-dones_t) * GAMMA * targets_selected_q_values
+            else:
+                target_q_values = _target_net(new_obses_t)
+                max_target_q_values = target_q_values.max(dim=1, keepdim=True)[0]
+
+                targets = rews_t + (1-dones_t) * GAMMA * max_target_q_values
 
         # Compute Loss
         q_values = self(obses_t)
@@ -154,8 +166,8 @@ if __name__ == "__main__":
 
     summary_writer = SummaryWriter(LOG_DIR)
 
-    online_net = Network(env, device)
-    target_net = Network(env, device)
+    online_net = Network(env, device, double=DOUBLE)
+    target_net = Network(env, device, double=DOUBLE)
 
     online_net = online_net.to(device)
     target_net = target_net.to(device)

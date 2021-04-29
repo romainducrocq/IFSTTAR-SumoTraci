@@ -1,0 +1,15 @@
+<configuration>
+	<input>
+		<net-file value="traci_tls_v2.net.xml"/>
+		<route-files value="traci_tls_v2.rou.xml"/>
+	</input>
+
+	<time>
+			<begin value="0"/>
+	</time>
+
+	<report>
+		<verbose value="true"/>
+		<no-step-log value="true"/>
+	</report>
+</configuration>
